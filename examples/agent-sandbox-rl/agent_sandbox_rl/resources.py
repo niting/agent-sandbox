@@ -346,10 +346,13 @@ class Resources:
   def delete_warmpool(self, name: str) -> None:
     self._delete(constants.WARMPOOLS_PLURAL, name, "SandboxWarmPool")
 
-  def pool_ready_replicas(self, name: str) -> int:
-    obj = self.custom_api.get_namespaced_custom_object(
+  def get_warmpool(self, name: str) -> dict:
+    return self.custom_api.get_namespaced_custom_object(
         group=constants.GROUP, version=constants.VERSION,
         namespace=self.namespace, plural=constants.WARMPOOLS_PLURAL, name=name)
+
+  def pool_ready_replicas(self, name: str) -> int:
+    obj = self.get_warmpool(name)
     return int((obj.get("status") or {}).get("readyReplicas", 0) or 0)
 
   def pool_ready_replicas_safe(self, name: str) -> int:
@@ -369,13 +372,26 @@ class Resources:
     is bounded by ``timeout``. Returns False on timeout.
     """
     deadline = time.monotonic() + timeout
+
+    def _check_ready() -> bool | None:
+      """Check readiness via GET. Returns True if ready, False if 404 (terminal), None otherwise."""
+      try:
+        if self.pool_ready_replicas(name) >= expected:
+          return True
+        return None
+      except client.ApiException as e:
+        if e.status == 404:
+          logger.error("Warm pool %s was deleted or does not exist", name)
+          return False
+        return None
+
     # Fast path: already ready (also covers the readiness that landed between
     # pool creation and the watch starting).
-    try:
-      if self.pool_ready_replicas(name) >= expected:
-        return True
-    except client.ApiException:
-      pass
+    fast_check = _check_ready()
+    if fast_check is True:
+      return True
+    if fast_check is False:
+      return False
 
     w = watch.Watch()
     try:
@@ -388,6 +404,9 @@ class Resources:
               namespace=self.namespace, plural=constants.WARMPOOLS_PLURAL,
               field_selector=f"metadata.name={name}",
               timeout_seconds=remaining):
+            if event.get("type") == "DELETED":
+              logger.error("Warm pool %s was deleted while waiting for ready", name)
+              return False
             obj = event.get("object") or {}
             if (obj.get("metadata") or {}).get("name") != name:
               continue                       # bookmarks / belt-and-suspenders
@@ -399,25 +418,38 @@ class Resources:
         except client.ApiException as e:
           # Terminal errors won't fix themselves — fail fast instead of
           # busy-looping until timeout (e.g. RBAC forbidden, CRD/namespace gone).
-          if e.status in (401, 403, 404):
+          if e.status == 404:
+            logger.error("Warm pool %s was deleted while waiting for ready", name)
+            return False
+          if e.status in (401, 403):
             logger.error("WarmPool '%s' watch failed (HTTP %s); not retrying: %s",
                          name, e.status, e)
             raise
           logger.debug("watch on '%s' interrupted (%s); re-checking", name, e)
-          if self.pool_ready_replicas_safe(name) >= expected:
+          recheck = _check_ready()
+          if recheck is True:
             return True
+          if recheck is False:
+            return False
           time.sleep(poll_interval)
         except Exception as e:  # noqa: BLE001 — connection drop / stale RV
           logger.debug("watch on '%s' dropped (%s); re-checking", name, e)
-          if self.pool_ready_replicas_safe(name) >= expected:
+          recheck = _check_ready()
+          if recheck is True:
             return True
+          if recheck is False:
+            return False
           time.sleep(poll_interval)
     finally:
       w.stop()
 
-    ready = self.pool_ready_replicas_safe(name)
-    if ready >= expected:
+    recheck = _check_ready()
+    if recheck is True:
       return True
+    if recheck is False:
+      return False
+
+    ready = self.pool_ready_replicas_safe(name)
     logger.error("WarmPool '%s' not ready (%d/%d) within %ds",
                  name, ready, expected, timeout)
     return False

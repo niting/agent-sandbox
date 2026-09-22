@@ -1170,7 +1170,9 @@ class SandboxFleet:
         self._torndown = True
     self.release_all()
     for c in self.registry:
-      sel = c.resources.managed_selector()
+      sel = (c.resources.managed_selector()
+             if self.config.teardown_all_managed
+             else self.run_selector())
       # Sweep any stray claims first (defensive: untracked/leaked claims keep
       # their adopted sandbox alive even after the pool is gone).
       try:

@@ -668,3 +668,23 @@ def test_warm_entries_sequential_continues_on_failure(make_cluster):
 
   # i2 was still attempted despite i1 failure
   assert c.resources.create_warmpool.call_count == 2
+
+
+def test_teardown_uses_run_selector_by_default(make_cluster):
+  c = make_cluster("solo")
+  f = SandboxFleet(FleetConfig(), registry=ClusterRegistry([c]))
+  f.teardown()
+  sel = f.run_selector()
+  c.resources.list_claims.assert_called_once_with(label_selector=sel)
+  c.resources.list_warmpools.assert_called_once_with(label_selector=sel)
+  c.resources.list_templates.assert_called_once_with(label_selector=sel)
+
+
+def test_teardown_all_managed_opt_in(make_cluster):
+  c = make_cluster("solo")
+  f = SandboxFleet(FleetConfig(teardown_all_managed=True), registry=ClusterRegistry([c]))
+  f.teardown()
+  sel = c.resources.managed_selector()
+  c.resources.list_claims.assert_called_once_with(label_selector=sel)
+  c.resources.list_warmpools.assert_called_once_with(label_selector=sel)
+  c.resources.list_templates.assert_called_once_with(label_selector=sel)

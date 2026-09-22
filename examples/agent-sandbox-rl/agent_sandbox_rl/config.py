@@ -148,6 +148,11 @@ class FleetConfig(BaseModel):
   # the fleet down on any exit path (orphan defense; pairs with the run-id label +
   # reaper). Set False if the host owns signal handling.
   install_teardown_hooks: bool = True
+  # When tearing down, only delete resources labeled with this run's run-id.
+  # If True, sweeps all resources managed by the SDK in the namespace (the old
+  # behavior; dangerous in shared namespaces). Default False; same contract as
+  # reap(all_managed=True).
+  teardown_all_managed: bool = False
   template: TemplateSpec = Field(default_factory=TemplateSpec)
   template_name_prefix: str = "r2e-img-"
   # How a pool name is derived from its template. `{template}` is the full

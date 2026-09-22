@@ -333,6 +333,20 @@ def test_adopt_teardown_still_removes_unadopted_leftovers(make_cluster):
   c.resources.list_warmpools.return_value = [_fleet_style(f.config, IMG_A),
                                              "stale-pool-from-a-crashed-run"]
   f.teardown()
+  c.resources.list_warmpools.assert_called_once_with(label_selector=f.run_selector())
+  c.resources.delete_warmpool.assert_called_once_with("stale-pool-from-a-crashed-run")
+
+
+def test_adopt_teardown_all_managed_opt_in(make_cluster):
+  c = make_cluster("solo")
+  f = _adopt_fleet(ClusterRegistry([c]), teardown_all_managed=True)
+  _seed(c, f.config, IMG_A)
+  f.load_tasks([IMG_A])
+  f.plan()
+  c.resources.list_warmpools.return_value = [_fleet_style(f.config, IMG_A),
+                                             "stale-pool-from-a-crashed-run"]
+  f.teardown()
+  c.resources.list_warmpools.assert_called_once_with(label_selector=c.resources.managed_selector())
   c.resources.delete_warmpool.assert_called_once_with("stale-pool-from-a-crashed-run")
 
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -341,6 +342,42 @@ def test_wait_for_pool_ready_raises_on_forbidden(monkeypatch):
   monkeypatch.setattr("agent_sandbox_rl.resources.watch.Watch", lambda: _ForbiddenWatch())
   with pytest.raises(client.ApiException):
     r.wait_for_pool_ready("pool-x", 1, timeout=5)
+
+
+def test_wait_for_pool_ready_fails_fast_on_deleted_event(monkeypatch):
+  # A DELETED watch event must fail fast (<1s) rather than timing out for 15m.
+  r = _resources()
+  r.custom_api.get_namespaced_custom_object.return_value = {"status": {"readyReplicas": 0}}
+
+  class _DeletedWatch:
+    def stream(self, func, **kw):
+      return [{"type": "DELETED", "object": {"metadata": {"name": "pool-x"}}}]
+
+    def stop(self):
+      pass
+
+  monkeypatch.setattr("agent_sandbox_rl.resources.watch.Watch", lambda: _DeletedWatch())
+  t0 = time.monotonic()
+  assert r.wait_for_pool_ready("pool-x", 1, timeout=600) is False
+  assert time.monotonic() - t0 < 1.0
+
+
+def test_wait_for_pool_ready_fails_fast_on_404():
+  # Initial GET raising 404 (NotFound) must fail fast (<1s) rather than retrying up to timeout.
+  r = _resources()
+  r.custom_api.get_namespaced_custom_object.side_effect = client.ApiException(status=404)
+  t0 = time.monotonic()
+  assert r.wait_for_pool_ready("pool-x", 1, timeout=600) is False
+  assert time.monotonic() - t0 < 1.0
+
+
+def test_wait_for_pool_ready_fails_fast_on_get_warmpool_404():
+  # Mocking get_warmpool raising 404 directly must also fail fast immediately.
+  r = _resources()
+  r.get_warmpool = MagicMock(side_effect=client.ApiException(status=404))
+  t0 = time.monotonic()
+  assert r.wait_for_pool_ready("pool-x", 1, timeout=600) is False
+  assert time.monotonic() - t0 < 1.0
 
 
 def test_labels_always_include_management_label():
